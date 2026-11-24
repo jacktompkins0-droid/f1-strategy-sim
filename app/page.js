@@ -37,7 +37,7 @@ export default function Home() {
   const [lap, setLap] = useState(1);
   const [totalLaps] = useState(57);
   const [field, setField] = useState(initialField);
-  const [log, setLog] = useState(['Race started.']);
+  const [log, setLog] = useState([{lap: 0, text: 'Race started. Lights out and away we go.'}]);
   const [pitCompound, setPitCompound] = useState('Medium');
   const [raceFinished, setRaceFinished] = useState(false);
   const [driversChamp, setDriversChamp] = useState({ LEC: 0, HAM: 0, VER: 0, NOR: 0 });
@@ -49,6 +49,10 @@ export default function Home() {
   useEffect(() => {
     if (lap >= totalLaps && !raceFinished) finishRace();
   }, [lap]);
+
+  function addLog(text) {
+    setLog(prev => [...prev, { lap, text }]);
+  }
 
   function avgTireAge(car) {
     return car.tires.reduce((a, b) => a + b, 0) / 4;
@@ -62,6 +66,7 @@ export default function Home() {
 
   function advance(laps = 1) {
     if (raceFinished) return;
+    const prevLeader = field.find(c => c.pos === 1)?.name;
     setField(prev => {
       let updated = prev.map(car => {
         const wearRate = car.action === 'push' ? 1.4 : car.action === 'conserve' ? 0.7 : 1.0;
@@ -69,39 +74,56 @@ export default function Home() {
         const avg = newTires.reduce((a,b)=>a+b,0)/4;
         let drop = 0;
         const max = tireLife[car.compound] || 20;
-        if (avg > max * 0.75) drop = 0.4;
-        if (avg > max) drop = 1.2;
+        if (avg > max * 0.8 && avg <= max) drop = 0.3;
+        if (avg > max) drop = 1.0;
         return { ...car, tires: newTires, pace: car.pace + drop * 0.01 + (car.penalty * 0.002) };
       });
+      const oldPos = {};
+      prev.forEach(c => oldPos[c.id] = c.pos);
       updated.sort((a, b) => (a.pace + avgTireAge(a) * 0.008 + a.penalty * 0.05) - (b.pace + avgTireAge(b) * 0.008 + b.penalty * 0.05));
-      updated.forEach((c, i) => c.pos = i + 1);
+      updated.forEach((c, i) => {
+        c.pos = i + 1;
+        if (oldPos[c.id] && oldPos[c.id] > c.pos) {
+          addLog(`${c.name} gains position to P${c.pos}`);
+        }
+        if (avgTireAge(c) > (tireLife[c.compound] || 20) * 0.9) {
+          addLog(`${c.name} tires approaching cliff`);
+        }
+      });
       return updated;
     });
-    setLap(l => Math.min(l + laps, totalLaps));
-    setLog(l => [...l, `Advanced ${laps} lap(s).`]);
+    const newLap = Math.min(lap + laps, totalLaps);
+    setLap(newLap);
+    addLog(`Lap ${newLap} complete.`);
+    const newLeader = field.find(c => c.pos === 1)?.name;
+    if (newLeader && newLeader !== prevLeader) {
+      addLog(`LEAD CHANGE: ${newLeader} now leads`);
+    }
   }
 
   function pit(driverId) {
     if (raceFinished) return;
-    setField(prev => prev.map(car => {
-      if (car.id === driverId) {
-        return { ...car, compound: pitCompound, tires: [0,0,0,0], pits: car.pits + 1, pace: Math.max(0.9, car.pace - 0.04) };
+    const car = field.find(c => c.id === driverId);
+    setField(prev => prev.map(c => {
+      if (c.id === driverId) {
+        return { ...c, compound: pitCompound, tires: [0,0,0,0], pits: c.pits + 1, pace: Math.max(0.9, c.pace - 0.04) };
       }
-      return car;
+      return c;
     }));
-    setLog(l => [...l, `${driverId} pitted for ${pitCompound}.`]);
+    addLog(`${car?.name} pits for ${pitCompound} (stop #${(car?.pits || 0) + 1})`);
   }
 
   function setAction(driverId, action) {
     setField(prev => prev.map(car => car.id === driverId ? { ...car, action } : car));
-    setLog(l => [...l, `${driverId} set to ${action}.`]);
+    addLog(`${driverId} strategy set to ${action}`);
   }
 
   function sendRadio(driverId) {
-    setLog(l => [...l, `Radio to ${driverId}: "${selectedRadio}"`]);
+    addLog(`Radio → ${driverId}: "${selectedRadio}"`);
   }
 
   function adjustTire(driverId, index, delta) {
+    const labels = ['FL','FR','RL','RR'];
     setField(prev => prev.map(car => {
       if (car.id === driverId) {
         const newTires = [...car.tires];
@@ -110,19 +132,20 @@ export default function Home() {
       }
       return car;
     }));
+    addLog(`${driverId} ${labels[index]} tire adjusted by ${delta > 0 ? '+' : ''}${delta}`);
   }
 
   function applyPenalty(driverId, type) {
     const amount = type === 'engine' ? 10 : type === 'gearbox' ? 5 : 3;
     setField(prev => prev.map(car => car.id === driverId ? { ...car, penalty: car.penalty + amount } : car));
-    setLog(l => [...l, `${driverId} received ${type} penalty.`]);
+    addLog(`PENALTY: ${driverId} ${type} (+${amount}s)`);
   }
 
   function finishRace() {
     setRaceFinished(true);
     const sorted = [...field].sort((a, b) => a.pos - b.pos);
     const winner = sorted[0];
-    setLog(l => [...l, `RACE FINISHED. Winner: ${winner.name}`]);
+    addLog(`CHECKERED FLAG. Winner: ${winner.name}`);
     const newDrivers = { ...driversChamp };
     const newCons = { ...constructorsChamp };
     sorted.slice(0, 8).forEach((car, i) => {
@@ -146,10 +169,10 @@ export default function Home() {
         <h1>Race Finished</h1>
         <h2>Winner: {field.find(c => c.pos === 1)?.name}</h2>
         <div className="grid">
-          <div className="card"><h3>Drivers</h3>{sortedDrivers.map(([id, pts]) => <p key={id}>{id}: {pts}</p>)}</div>
-          <div className="card"><h3>Constructors</h3>{sortedCons.map(([team, pts]) => <p key={team}>{team}: {pts}</p>)}</div>
+          <div className="card"><h3>Drivers Championship</h3>{sortedDrivers.map(([id, pts]) => <p key={id}>{id}: {pts} pts</p>)}</div>
+          <div className="card"><h3>Constructors Championship</h3>{sortedCons.map(([team, pts]) => <p key={team}>{team}: {pts} pts</p>)}</div>
         </div>
-        <button onClick={() => { setRaceFinished(false); setLap(1); setField(initialField); setLog(['New race.']); }}>New Race</button>
+        <button onClick={() => { setRaceFinished(false); setLap(1); setField(initialField); setLog([{lap:0, text:'New race started.'}]); }}>New Race</button>
       </div>
     );
   }
@@ -164,7 +187,6 @@ export default function Home() {
           <h2>Leclerc (P{lec?.pos})</h2>
           <p>Action: {lec?.action} | Compound: {lec?.compound} | Pits: {lec?.pits}</p>
           <p>Avg tire age: {avgTireAge(lec).toFixed(1)} | Left: {getTirePercent(lec)}%</p>
-          <div>Tires (FL FR RL RR): {lec?.tires.map(t => t.toFixed(1)).join(' / ')}</div>
           <select value={lec?.action} onChange={e => setAction('LEC', e.target.value)}>
             <option value="push">Push</option>
             <option value="manage">Manage</option>
@@ -172,9 +194,9 @@ export default function Home() {
           </select>
           <button onClick={() => pit('LEC')}>Pit</button>
           <button onClick={() => sendRadio('LEC')}>Radio</button>
-          <div>
+          <div style={{marginTop:8}}>
             {['FL','FR','RL','RR'].map((label, i) => (
-              <span key={i}>
+              <span key={i} style={{marginRight:8}}>
                 {label}: <button onClick={() => adjustTire('LEC', i, -1)}>-</button> {lec?.tires[i].toFixed(1)} <button onClick={() => adjustTire('LEC', i, 1)}>+</button>
               </span>
             ))}
@@ -184,7 +206,6 @@ export default function Home() {
           <h2>Hamilton (P{ham?.pos})</h2>
           <p>Action: {ham?.action} | Compound: {ham?.compound} | Pits: {ham?.pits}</p>
           <p>Avg tire age: {avgTireAge(ham).toFixed(1)} | Left: {getTirePercent(ham)}%</p>
-          <div>Tires (FL FR RL RR): {ham?.tires.map(t => t.toFixed(1)).join(' / ')}</div>
           <select value={ham?.action} onChange={e => setAction('HAM', e.target.value)}>
             <option value="push">Push</option>
             <option value="manage">Manage</option>
@@ -192,9 +213,9 @@ export default function Home() {
           </select>
           <button onClick={() => pit('HAM')}>Pit</button>
           <button onClick={() => sendRadio('HAM')}>Radio</button>
-          <div>
+          <div style={{marginTop:8}}>
             {['FL','FR','RL','RR'].map((label, i) => (
-              <span key={i}>
+              <span key={i} style={{marginRight:8}}>
                 {label}: <button onClick={() => adjustTire('HAM', i, -1)}>-</button> {ham?.tires[i].toFixed(1)} <button onClick={() => adjustTire('HAM', i, 1)}>+</button>
               </span>
             ))}
@@ -224,21 +245,13 @@ export default function Home() {
         </div>
       </div>
 
-      <div className="card" style={{marginTop: 15}}>
-        <h3>Tire Life</h3>
-        <table>
-          <thead><tr><th>Driver</th><th>%</th><th>Avg Age</th><th>Pits</th></tr></thead>
-          <tbody>
-            {[...field].sort((a,b)=>getTirePercent(b)-getTirePercent(a)).map(car => (
-              <tr key={car.id}><td>{car.name}</td><td>{getTirePercent(car)}%</td><td>{avgTireAge(car).toFixed(1)}</td><td>{car.pits}</td></tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="card" style={{marginTop: 15}}>
-        <h3>Log</h3>
-        {log.slice(-12).map((e,i) => <p key={i}>{e}</p>)}
+      <div className="card" style={{marginTop: 15, maxHeight: '280px', overflowY: 'auto', background: '#111'}}>
+        <h3>Race Events & Log</h3>
+        {log.slice().reverse().map((entry, i) => (
+          <p key={i} style={{margin: '4px 0', fontSize: '14px', borderBottom: '1px solid #222', paddingBottom: '4px'}}>
+            <strong>L{entry.lap}</strong> {entry.text}
+          </p>
+        ))}
       </div>
     </div>
   );
